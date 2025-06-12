@@ -1,4 +1,4 @@
-# app.py (Version avec correction de rerun)
+# app.py (Version avec correction du ValueError)
 import streamlit as st
 import pandas as pd
 from io import BytesIO
@@ -116,37 +116,29 @@ if relations_file and origins_file and destinations_file:
         if st.sidebar.button("🚀 Lancer l'Exécution", use_container_width=True):
             st.session_state.log_optim = ""
             with st.spinner("Exécution en cours..."):
-                # --- LOGIQUE D'APPEL ---
                 if mode_choice == "Simulation Simple":
                     if heuristique_choice == "H1":
                         final_sim_results = sim.run_simulation_h1(relations_df, origins_df, destinations_df, qmin_common_config=start_qmin_config, phase2_config=start_phase2_config, num_initial_wagons_param=num_wagons, silent_mode=True)
-                    else: # H2
-                        qmin_list = generate_list_from_config(destinations_df, start_qmin_config)
-                        phase2_list = generate_list_from_config(destinations_df, start_phase2_config)
+                    else:
+                        qmin_list = generate_list_from_config(destinations_df, start_qmin_config); phase2_list = generate_list_from_config(destinations_df, start_phase2_config)
                         final_sim_results = sim.run_simulation_h2(relations_df, origins_df, destinations_df, qmin_user_priority_order=qmin_list, standard_shipment_dest_priority_order=phase2_list, num_initial_wagons_param=num_wagons, silent_mode=True)
-                else: # Optimisation
+                else:
                     st.session_state.log_optim += f"Lancement optim. {heuristique_choice} / {max_iter} itérations...\n"
-                    start_qmin_list = generate_list_from_config(destinations_df, start_qmin_config)
-                    start_phase2_list = generate_list_from_config(destinations_df, start_phase2_config)
+                    start_qmin_list = generate_list_from_config(destinations_df, start_qmin_config); start_phase2_list = generate_list_from_config(destinations_df, start_phase2_config)
                     st.session_state.log_optim += f"Départ QMIN: {start_qmin_list}\nDépart Phase 2: {start_phase2_list}\n\n"
-                    old_stdout = sys.stdout
-                    sys.stdout = captured_output = StringIO()
+                    old_stdout = sys.stdout; sys.stdout = captured_output = StringIO()
                     if heuristique_choice == 'H1':
-                        start_qmin_h1_config = ('custom_order', start_qmin_list)
-                        start_phase2_h1_config = ('custom_order', start_phase2_list)
+                        start_qmin_h1_config = ('custom_order', start_qmin_list); start_phase2_h1_config = ('custom_order', start_phase2_list)
                         best_qmin_cfg, _, best_phase2_cfg = sim.hill_climbing_maximizer_h1(relations_df, origins_df, destinations_df, start_qmin_h1_config, start_phase2_h1_config, num_wagons, max_iter)
                         final_sim_results = sim.run_simulation_h1(relations_df, origins_df, destinations_df, best_qmin_cfg, best_phase2_cfg, num_wagons, silent_mode=True)
-                    else: # H2
+                    else:
                         best_qmin_order, best_phase2_order = sim.hill_climbing_maximizer_h2(relations_df, origins_df, destinations_df, start_qmin_list, start_phase2_list, num_wagons, max_iter)
                         final_sim_results = sim.run_simulation_h2(relations_df, origins_df, destinations_df, best_qmin_order, best_phase2_order, num_wagons, silent_mode=True)
                     sys.stdout = old_stdout
                     st.session_state.log_optim += captured_output.getvalue()
-            
             st.session_state.results = final_sim_results
             st.session_state.initial_data = (origins_df.copy(), destinations_df.copy())
-            
-            ### MODIFICATION : Remplacement de la fonction obsolète ###
-            st.rerun() 
+            st.rerun()
 else:
     st.info("👋 Bienvenue ! Veuillez téléverser les 3 fichiers CSV dans la barre latérale pour commencer.")
 
@@ -168,12 +160,10 @@ if st.session_state.results:
     excel_data = create_excel_download(res, initial_orig, initial_dest)
     st.download_button("📥 Télécharger le rapport complet (Excel)", excel_data, "resultats_simulation.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
 
-    # Préparation des données pour les graphiques
     shipments_df = res.get('shipments_df')
     final_dest_df = res.get('final_destinations_df')
     final_orig_df = res.get('final_origins_df')
     
-    # Création des onglets
     tab_graph, tab_transport, tab_dest, tab_orig, tab_wagon = st.tabs(["📈 Graphiques & KPIs", "Transport (Détail)", "Récap. Destinations", "Récap. Origines", "Suivi des Wagons"])
 
     with tab_graph:
@@ -192,12 +182,22 @@ if st.session_state.results:
 
             with col2_graph:
                 st.write("**Taux de satisfaction de la demande (%)**")
-                if final_dest_df is not None and 'annual_demand_tons' in initial_dest.columns:
-                    recap_df = final_dest_df.join(initial_dest['annual_demand_tons'])
-                    recap_df['satisfaction_rate'] = (recap_df['delivered_so_far_tons'] / recap_df['annual_demand_tons'] * 100).fillna(0)
-                    st.bar_chart(recap_df['satisfaction_rate'])
+                ### CORRECTION ###
+                # On travaille directement avec final_dest_df qui contient déjà toutes les colonnes nécessaires.
+                if final_dest_df is not None:
+                    # On s'assure que les colonnes nécessaires existent pour éviter les erreurs
+                    if 'annual_demand_tons' in final_dest_df.columns and 'delivered_so_far_tons' in final_dest_df.columns:
+                        recap_df = final_dest_df.copy()
+                        # Éviter la division par zéro si la demande est nulle
+                        recap_df['satisfaction_rate'] = recap_df.apply(
+                            lambda row: (row['delivered_so_far_tons'] / row['annual_demand_tons'] * 100) if row['annual_demand_tons'] > 0 else 0,
+                            axis=1
+                        ).fillna(0)
+                        st.bar_chart(recap_df['satisfaction_rate'])
+                    else:
+                        st.warning("Colonnes 'annual_demand_tons' ou 'delivered_so_far_tons' manquantes pour le graphique de satisfaction.")
                 else:
-                    st.warning("Données manquantes pour ce graphique.")
+                    st.warning("Données de destination manquantes pour ce graphique.")
             
             st.write("**Flux d'expédition par jour (en tonnes)**")
             tons_per_day = shipments_df.groupby('ship_day')['quantity_tons'].sum()
@@ -229,3 +229,4 @@ if st.session_state.results:
                 st.line_chart(wagon_log_df.set_index('day'), y=['available_start', 'in_transit_end'])
                 with st.expander("Voir les données détaillées du suivi"):
                     st.dataframe(wagon_log_df)
+       
