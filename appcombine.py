@@ -8,7 +8,7 @@ from io import StringIO
 # Assurez-vous que votre fichier de simulation s'appelle 'simulation_logic.py'
 # et qu'il est dans le même dossier.
 try:
-    import simulation_logic as sim
+    import combainaisonexceldescente as sim
 except ImportError:
     st.error("ERREUR: Le fichier 'simulation_logic.py' est introuvable. Assurez-vous qu'il est dans le même dossier que 'app.py'.")
     st.stop()
