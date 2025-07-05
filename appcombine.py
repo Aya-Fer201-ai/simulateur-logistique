@@ -69,7 +69,6 @@ def generate_list_from_config(df, config_tuple):
 def create_excel_download_link(sim_results, origins_initial_df, destinations_initial_df):
     """Crée un fichier Excel en mémoire pour le téléchargement."""
     output = BytesIO()
-    # On suppose que cette fonction existe dans votre module `sim`
     sim.ecrire_resultats_excel(output, "resultats_simulation", sim_results, origins_initial_df, destinations_initial_df)
     return output.getvalue()
 
@@ -94,9 +93,17 @@ with st.sidebar:
     origins_file = st.file_uploader("Fichier des Origines", type="csv")
     destinations_file = st.file_uploader("Fichier des Destinations", type="csv")
 
-    # Si les fichiers sont chargés, on affiche le reste des options
     if relations_file and origins_file and destinations_file:
-        relations_df, origins_df, destinations_df = load_and_clean_data(relations_file, origins_file, destinations_file)
+        # On charge les données depuis la fonction cachée
+        relations_df_raw, origins_df_raw, destinations_df_raw = load_and_clean_data(relations_file, origins_file, destinations_file)
+        
+        # --- CORRECTION CRUCIALE ---
+        # On copie les dataframes pour éviter de modifier les objets en cache.
+        # C'est ce qui empêche les données "initiales" d'être corrompues par une simulation.
+        relations_df = relations_df_raw.copy()
+        origins_df = origins_df_raw.copy()
+        destinations_df = destinations_df_raw.copy()
+        # --- FIN DE LA CORRECTION ---
         
         if relations_df is not None:
             st.success("✅ Fichiers chargés.")
@@ -115,18 +122,15 @@ with st.sidebar:
                 "QMIN Cible (Croissant)": ('q_min_initial_target_tons', True),
             }
             
-            # Utilisation de clés différentes pour les selectbox pour éviter les conflits
             qmin_sort_choice = st.selectbox("Ordre de priorité pour QMIN (Phase 1):", sort_options.keys(), key="qmin_order")
             phase2_sort_choice = st.selectbox("Ordre de priorité pour expéditions (Phase 2):", sort_options.keys(), key="phase2_order")
             
-            # Bouton pour lancer la simulation
             if st.button("🚀 Lancer la Simulation", use_container_width=True, type="primary"):
                 qmin_config = sort_options[qmin_sort_choice]
                 phase2_config = sort_options[phase2_sort_choice]
                 
                 st.session_state.initial_data = (origins_df.copy(), destinations_df.copy())
 
-                # --- BLOC D'EXÉCUTION DE LA SIMULATION ---
                 with st.spinner("Simulation en cours..."):
                     try:
                         if heuristique_choice == "H1":
@@ -158,7 +162,6 @@ with st.sidebar:
                 
                 st.rerun()
 
-# Message d'accueil si aucun fichier n'est chargé
 if not (relations_file and origins_file and destinations_file):
     st.info("👋 Bienvenue ! Veuillez téléverser vos 3 fichiers CSV dans la barre latérale pour commencer.")
 
@@ -178,7 +181,6 @@ if st.session_state.results:
     
     st.divider()
 
-    # Bouton de téléchargement Excel
     if st.session_state.initial_data:
         initial_orig, initial_dest = st.session_state.initial_data
         excel_data = create_excel_download_link(res, initial_orig, initial_dest)
@@ -195,7 +197,6 @@ if st.session_state.results:
     final_orig_df = res.get('final_origins_df')
     tracking_vars = res.get('final_tracking_vars')
 
-    # Onglets pour les résultats
     tab_graph, tab_transport, tab_dest, tab_orig, tab_wagon = st.tabs([
         "📈 Graphiques", "🚚 Détail des Transports", "🎯 Destinations", "🏭 Origines", "🛤️ Suivi Wagons"
     ])
@@ -204,16 +205,13 @@ if st.session_state.results:
         st.subheader("Analyse Visuelle")
         if shipments_df is not None and not shipments_df.empty:
             col1_graph, col2_graph = st.columns(2)
-            
             with col1_graph:
                 st.write("**Quantité livrée par destination**")
                 tons_per_dest = shipments_df.groupby('destination')['quantity_tons'].sum().sort_values(ascending=False)
                 st.bar_chart(tons_per_dest)
-
                 st.write("**Quantité expédiée par origine**")
                 tons_per_origin = shipments_df.groupby('origin')['quantity_tons'].sum().sort_values(ascending=False)
                 st.bar_chart(tons_per_origin)
-
             with col2_graph:
                 st.write("**Taux de satisfaction de la demande (%)**")
                 if final_dest_df is not None and all(c in final_dest_df.columns for c in ['annual_demand_tons', 'delivered_so_far_tons']):
@@ -222,7 +220,6 @@ if st.session_state.results:
                     st.bar_chart(recap_df, y='satisfaction_rate')
                 else:
                     st.warning("Données manquantes pour le graphique de satisfaction.")
-            
             st.write("**Flux d'expédition par jour (en tonnes)**")
             tons_per_day = shipments_df.groupby('ship_day')['quantity_tons'].sum()
             st.line_chart(tons_per_day)
@@ -239,69 +236,42 @@ if st.session_state.results:
         if final_dest_df is not None:
             st.dataframe(final_dest_df.style.format(precision=2))
 
-    # --- NOUVEAU BLOC MODIFIÉ ---
     with tab_orig:
         st.subheader("État Final par Origine")
-        
-        # Vérification que toutes les données nécessaires sont présentes
         if final_orig_df is not None and st.session_state.initial_data:
             initial_orig_df, _ = st.session_state.initial_data
             origins_display_df = final_orig_df.copy()
 
-            # --- 1. Calcul des nouvelles colonnes ---
-            
-            # Ajout du stock initial pour comparaison
             origins_display_df['stock_initial_t'] = initial_orig_df['initial_available_product_tons']
-            
-            # Renommage du stock final pour plus de clarté
             origins_display_df = origins_display_df.rename(columns={'initial_available_product_tons': 'stock_final_t'})
-
-            # Calcul du stock utilisé
             origins_display_df['stock_utilise_t'] = origins_display_df['stock_initial_t'] - origins_display_df['stock_final_t']
-
-            # Calcul du taux d'utilisation en % (avec protection contre la division par zéro)
             origins_display_df['utilisation_stock_%'] = origins_display_df.apply(
                 lambda row: (row['stock_utilise_t'] / row['stock_initial_t'] * 100) if row['stock_initial_t'] > 0 else 0,
                 axis=1
             )
             
-            # Calcul de l'autonomie restante en jours
             days_sim = res.get('days_taken_simulation_loop')
             if shipments_df is not None and not shipments_df.empty and days_sim is not None and days_sim > 0:
-                # Calculer le débit journalier moyen par origine
                 daily_flow_per_origin = shipments_df.groupby('origin')['quantity_tons'].sum() / days_sim
                 origins_display_df['debit_moyen_jour'] = origins_display_df.index.map(daily_flow_per_origin).fillna(0)
-                
-                # Calculer l'autonomie (avec protection contre la division par zéro)
                 origins_display_df['autonomie_restante_j'] = origins_display_df.apply(
                     lambda row: row['stock_final_t'] / row['debit_moyen_jour'] if row['debit_moyen_jour'] > 0 else np.inf,
                     axis=1
                 )
-                # On peut supprimer la colonne intermédiaire du débit
                 origins_display_df = origins_display_df.drop(columns=['debit_moyen_jour'])
             else:
-                # Si pas d'expédition, l'autonomie ne peut être calculée
                 origins_display_df['autonomie_restante_j'] = np.nan
 
-            # --- 2. Organisation et affichage du DataFrame ---
-            
-            # Définir l'ordre des colonnes pour un affichage logique
             cols_order = [
-                'stock_initial_t', 
-                'stock_final_t',
-                'stock_utilise_t',
-                'utilisation_stock_%',
-                'autonomie_restante_j',
-                'daily_loading_capacity_tons' # Les autres colonnes existantes
+                'stock_initial_t', 'stock_final_t', 'stock_utilise_t', 'utilisation_stock_%',
+                'autonomie_restante_j', 'daily_loading_capacity_tons'
             ]
-            # S'assurer que toutes les colonnes existent avant de réordonner
             existing_cols_in_order = [col for col in cols_order if col in origins_display_df.columns]
             other_cols = [col for col in origins_display_df.columns if col not in existing_cols_in_order]
             final_cols_order = existing_cols_in_order + other_cols
             
             origins_display_df = origins_display_df[final_cols_order]
 
-            # Définir le formatage pour chaque colonne
             st.dataframe(origins_display_df.style.format({
                 'stock_initial_t': '{:,.0f}',
                 'stock_final_t': '{:,.0f}',
@@ -310,7 +280,6 @@ if st.session_state.results:
                 'utilisation_stock_%': '{:.1f}%',
                 'autonomie_restante_j': '{:.1f}'
             }, na_rep="N/A").set_properties(**{'text-align': 'right'}))
-
         else:
             st.info("Les données sur l'état final des origines ne sont pas disponibles.")
             
@@ -326,4 +295,3 @@ if st.session_state.results:
                 st.info("Aucune donnée de suivi des wagons n'a été enregistrée.")
         else:
             st.info("Le suivi des wagons n'était pas activé ou n'a retourné aucune donnée.")
-           
