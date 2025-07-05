@@ -3,6 +3,7 @@ import streamlit as st
 import pandas as pd
 from io import BytesIO
 import traceback # Important pour afficher les erreurs détaillées
+import numpy as np # Importation de numpy pour gérer l'infini
 
 # --- Configuration de la Page ---
 st.set_page_config(
@@ -129,7 +130,6 @@ with st.sidebar:
                 with st.spinner("Simulation en cours..."):
                     try:
                         if heuristique_choice == "H1":
-                            # H1 utilise directement les configurations de tri
                             results = sim.run_simulation_h1(
                                 relations_df, origins_df.copy(), destinations_df.copy(),
                                 qmin_common_config=qmin_config,
@@ -138,7 +138,6 @@ with st.sidebar:
                                 silent_mode=True
                             )
                         else: # Heuristique H2
-                            # H2 a besoin de listes triées, on les génère
                             qmin_list = generate_list_from_config(destinations_df, qmin_config)
                             phase2_list = generate_list_from_config(destinations_df, phase2_config)
                             results = sim.run_simulation_h2(
@@ -152,7 +151,6 @@ with st.sidebar:
                         st.session_state.results = results
                         
                     except Exception as e:
-                        # GESTION D'ERREUR : Affiche une erreur claire si la simulation plante
                         st.error(f"❌ Une erreur est survenue pendant la simulation :")
                         st.error(str(e))
                         st.code(traceback.format_exc())
@@ -164,7 +162,6 @@ with st.sidebar:
 if not (relations_file and origins_file and destinations_file):
     st.info("👋 Bienvenue ! Veuillez téléverser vos 3 fichiers CSV dans la barre latérale pour commencer.")
 
-
 # ==============================================================================
 # --- AFFICHAGE DES RÉSULTATS ---
 # ==============================================================================
@@ -173,63 +170,12 @@ if st.session_state.results:
     res = st.session_state.results
     st.header("📊 Résultats de la Simulation")
 
-    # --- NOUVEAU : Bloc de calcul des KPIs ---
-    stock_used_tons = "N/A"
-    stock_utilization_rate = "N/A"
-    remaining_autonomy_days_display = "N/A"
-    
-    # Récupération des dataframes nécessaires
-    final_orig_df = res.get('final_origins_df')
-    initial_orig_df, _ = st.session_state.initial_data
-    shipments_df = res.get('shipments_df')
-    days_sim = res.get('days_taken_simulation_loop')
-
-    if final_orig_df is not None and initial_orig_df is not None:
-        # Calcul du stock
-        initial_stock_total = initial_orig_df['initial_available_product_tons'].sum()
-        final_stock_total = final_orig_df['initial_available_product_tons'].sum()
-        
-        # 1. Stock utilisé (en tonnes)
-        stock_used_tons = initial_stock_total - final_stock_total
-        
-        # 2. Taux d'utilisation du stock (%)
-        if initial_stock_total > 0:
-            utilization_rate = (stock_used_tons / initial_stock_total) * 100
-            stock_utilization_rate = f"{utilization_rate:.1f}%"
-        else:
-            stock_utilization_rate = "N/A"
-
-        # 3. Autonomie restante (en jours)
-        if (shipments_df is not None and not shipments_df.empty and 
-            days_sim is not None and days_sim > 0):
-            
-            avg_daily_shipment = shipments_df['quantity_tons'].sum() / days_sim
-            
-            if avg_daily_shipment > 0:
-                autonomy_days = final_stock_total / avg_daily_shipment
-                remaining_autonomy_days_display = f"{autonomy_days:.1f}"
-            else:
-                # Si rien n'a été expédié, l'autonomie est "infinie"
-                remaining_autonomy_days_display = "∞" 
-        else:
-            remaining_autonomy_days_display = "N/A" # Pas assez d'infos pour calculer
-
-    # --- FIN du bloc de calcul ---
-
-    # Affichage des KPIs en 2 rangées pour une meilleure lisibilité
-    st.subheader("Indicateurs Clés de Performance (KPIs)")
+    # KPIs
     col1, col2, col3 = st.columns(3)
     col1.metric("Profit Final (Tonnes * km)", f"{res.get('profit', 0):,.0f}".replace(',', ' '))
-    col2.metric("Jours de simulation", f"{days_sim if days_sim is not None else 'N/A'}")
+    col2.metric("Jours de simulation", f"{res.get('days_taken_simulation_loop', 'N/A')}")
     col3.metric("Demande satisfaite ?", "✅ Oui" if res.get('all_demand_met', False) else "❌ Non")
     
-    # --- NOUVEAU : Affichage des nouveaux KPIs ---
-    col4, col5, col6 = st.columns(3)
-    col4.metric("Stock utilisé (tonnes)", f"{stock_used_tons:,.0f}".replace(',', ' ') if isinstance(stock_used_tons, (int, float)) else "N/A")
-    col5.metric("Taux d'utilisation du stock", stock_utilization_rate)
-    col6.metric("Autonomie restante (jours)", remaining_autonomy_days_display)
-    
-    # Ligne de séparation visuelle
     st.divider()
 
     # Bouton de téléchargement Excel
@@ -244,8 +190,9 @@ if st.session_state.results:
             use_container_width=True
         )
 
-    # Le reste du code reste identique...
+    shipments_df = res.get('shipments_df')
     final_dest_df = res.get('final_destinations_df')
+    final_orig_df = res.get('final_origins_df')
     tracking_vars = res.get('final_tracking_vars')
 
     # Onglets pour les résultats
@@ -292,10 +239,80 @@ if st.session_state.results:
         if final_dest_df is not None:
             st.dataframe(final_dest_df.style.format(precision=2))
 
+    # --- NOUVEAU BLOC MODIFIÉ ---
     with tab_orig:
         st.subheader("État Final par Origine")
-        if final_orig_df is not None:
-            st.dataframe(final_orig_df.style.format(precision=2))
+        
+        # Vérification que toutes les données nécessaires sont présentes
+        if final_orig_df is not None and st.session_state.initial_data:
+            initial_orig_df, _ = st.session_state.initial_data
+            origins_display_df = final_orig_df.copy()
+
+            # --- 1. Calcul des nouvelles colonnes ---
+            
+            # Ajout du stock initial pour comparaison
+            origins_display_df['stock_initial_t'] = initial_orig_df['initial_available_product_tons']
+            
+            # Renommage du stock final pour plus de clarté
+            origins_display_df = origins_display_df.rename(columns={'initial_available_product_tons': 'stock_final_t'})
+
+            # Calcul du stock utilisé
+            origins_display_df['stock_utilise_t'] = origins_display_df['stock_initial_t'] - origins_display_df['stock_final_t']
+
+            # Calcul du taux d'utilisation en % (avec protection contre la division par zéro)
+            origins_display_df['utilisation_stock_%'] = origins_display_df.apply(
+                lambda row: (row['stock_utilise_t'] / row['stock_initial_t'] * 100) if row['stock_initial_t'] > 0 else 0,
+                axis=1
+            )
+            
+            # Calcul de l'autonomie restante en jours
+            days_sim = res.get('days_taken_simulation_loop')
+            if shipments_df is not None and not shipments_df.empty and days_sim is not None and days_sim > 0:
+                # Calculer le débit journalier moyen par origine
+                daily_flow_per_origin = shipments_df.groupby('origin')['quantity_tons'].sum() / days_sim
+                origins_display_df['debit_moyen_jour'] = origins_display_df.index.map(daily_flow_per_origin).fillna(0)
+                
+                # Calculer l'autonomie (avec protection contre la division par zéro)
+                origins_display_df['autonomie_restante_j'] = origins_display_df.apply(
+                    lambda row: row['stock_final_t'] / row['debit_moyen_jour'] if row['debit_moyen_jour'] > 0 else np.inf,
+                    axis=1
+                )
+                # On peut supprimer la colonne intermédiaire du débit
+                origins_display_df = origins_display_df.drop(columns=['debit_moyen_jour'])
+            else:
+                # Si pas d'expédition, l'autonomie ne peut être calculée
+                origins_display_df['autonomie_restante_j'] = np.nan
+
+            # --- 2. Organisation et affichage du DataFrame ---
+            
+            # Définir l'ordre des colonnes pour un affichage logique
+            cols_order = [
+                'stock_initial_t', 
+                'stock_final_t',
+                'stock_utilise_t',
+                'utilisation_stock_%',
+                'autonomie_restante_j',
+                'daily_loading_capacity_tons' # Les autres colonnes existantes
+            ]
+            # S'assurer que toutes les colonnes existent avant de réordonner
+            existing_cols_in_order = [col for col in cols_order if col in origins_display_df.columns]
+            other_cols = [col for col in origins_display_df.columns if col not in existing_cols_in_order]
+            final_cols_order = existing_cols_in_order + other_cols
+            
+            origins_display_df = origins_display_df[final_cols_order]
+
+            # Définir le formatage pour chaque colonne
+            st.dataframe(origins_display_df.style.format({
+                'stock_initial_t': '{:,.0f}',
+                'stock_final_t': '{:,.0f}',
+                'stock_utilise_t': '{:,.0f}',
+                'daily_loading_capacity_tons': '{:,.0f}',
+                'utilisation_stock_%': '{:.1f}%',
+                'autonomie_restante_j': '{:.1f}'
+            }, na_rep="N/A").set_properties(**{'text-align': 'right'}))
+
+        else:
+            st.info("Les données sur l'état final des origines ne sont pas disponibles.")
             
     with tab_wagon:
         st.subheader("Suivi Quotidien des Wagons")
@@ -309,3 +326,4 @@ if st.session_state.results:
                 st.info("Aucune donnée de suivi des wagons n'a été enregistrée.")
         else:
             st.info("Le suivi des wagons n'était pas activé ou n'a retourné aucune donnée.")
+           
