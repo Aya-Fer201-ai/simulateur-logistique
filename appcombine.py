@@ -94,16 +94,12 @@ with st.sidebar:
     destinations_file = st.file_uploader("Fichier des Destinations", type="csv")
 
     if relations_file and origins_file and destinations_file:
-        # On charge les données depuis la fonction cachée
         relations_df_raw, origins_df_raw, destinations_df_raw = load_and_clean_data(relations_file, origins_file, destinations_file)
         
-        # --- CORRECTION CRUCIALE ---
-        # On copie les dataframes pour éviter de modifier les objets en cache.
-        # C'est ce qui empêche les données "initiales" d'être corrompues par une simulation.
+        # Copie des dataframes pour éviter la corruption du cache
         relations_df = relations_df_raw.copy()
         origins_df = origins_df_raw.copy()
         destinations_df = destinations_df_raw.copy()
-        # --- FIN DE LA CORRECTION ---
         
         if relations_df is not None:
             st.success("✅ Fichiers chargés.")
@@ -129,6 +125,7 @@ with st.sidebar:
                 qmin_config = sort_options[qmin_sort_choice]
                 phase2_config = sort_options[phase2_sort_choice]
                 
+                # Sauvegarde des données initiales PURES avant toute modification
                 st.session_state.initial_data = (origins_df.copy(), destinations_df.copy())
 
                 with st.spinner("Simulation en cours..."):
@@ -204,6 +201,7 @@ if st.session_state.results:
     with tab_graph:
         st.subheader("Analyse Visuelle")
         if shipments_df is not None and not shipments_df.empty:
+            # ... (code de l'onglet graphiques inchangé) ...
             col1_graph, col2_graph = st.columns(2)
             with col1_graph:
                 st.write("**Quantité livrée par destination**")
@@ -226,6 +224,7 @@ if st.session_state.results:
         else:
             st.info("Aucune expédition n'a été réalisée.")
 
+
     with tab_transport:
         st.subheader("Détail de toutes les Expéditions")
         if shipments_df is not None:
@@ -236,50 +235,89 @@ if st.session_state.results:
         if final_dest_df is not None:
             st.dataframe(final_dest_df.style.format(precision=2))
 
+    # --- BLOC "ORIGINES" MODIFIÉ AVEC DÉBOGAGE INTÉGRÉ ---
     with tab_orig:
         st.subheader("État Final par Origine")
+        
         if final_orig_df is not None and st.session_state.initial_data:
             initial_orig_df, _ = st.session_state.initial_data
             origins_display_df = final_orig_df.copy()
 
-            origins_display_df['stock_initial_t'] = initial_orig_df['initial_available_product_tons']
-            origins_display_df = origins_display_df.rename(columns={'initial_available_product_tons': 'stock_final_t'})
-            origins_display_df['stock_utilise_t'] = origins_display_df['stock_initial_t'] - origins_display_df['stock_final_t']
-            origins_display_df['utilisation_stock_%'] = origins_display_df.apply(
-                lambda row: (row['stock_utilise_t'] / row['stock_initial_t'] * 100) if row['stock_initial_t'] > 0 else 0,
-                axis=1
-            )
+            # --- PARAMÈTRES À VÉRIFIER ---
+            # Nom de la colonne du stock DANS LE FICHIER INITIAL
+            col_stock_initial = 'initial_available_product_tons'
             
-            days_sim = res.get('days_taken_simulation_loop')
-            if shipments_df is not None and not shipments_df.empty and days_sim is not None and days_sim > 0:
-                daily_flow_per_origin = shipments_df.groupby('origin')['quantity_tons'].sum() / days_sim
-                origins_display_df['debit_moyen_jour'] = origins_display_df.index.map(daily_flow_per_origin).fillna(0)
-                origins_display_df['autonomie_restante_j'] = origins_display_df.apply(
-                    lambda row: row['stock_final_t'] / row['debit_moyen_jour'] if row['debit_moyen_jour'] > 0 else np.inf,
+            # Nom de la colonne du stock DANS LE FICHIER FINAL (retourné par la simulation)
+            # 💡 HYPOTHÈSE : C'est 'initial_available_product_tons'. Si ça ne marche pas,
+            #    l'application affichera la liste des colonnes disponibles et vous pourrez
+            #    corriger le nom ici.
+            col_stock_final = 'initial_available_product_tons' 
+            # --- FIN DES PARAMÈTRES ---
+
+            # On vérifie que les colonnes existent avant de continuer
+            if col_stock_initial in initial_orig_df.columns and col_stock_final in origins_display_df.columns:
+                
+                origins_display_df['stock_initial_t'] = initial_orig_df[col_stock_initial]
+                origins_display_df['stock_final_t'] = origins_display_df[col_stock_final]
+                origins_display_df['stock_utilise_t'] = origins_display_df['stock_initial_t'] - origins_display_df['stock_final_t']
+
+                origins_display_df['utilisation_stock_%'] = origins_display_df.apply(
+                    lambda row: (row['stock_utilise_t'] / row['stock_initial_t'] * 100) if row['stock_initial_t'] > 0 else 0,
                     axis=1
                 )
-                origins_display_df = origins_display_df.drop(columns=['debit_moyen_jour'])
+                
+                days_sim = res.get('days_taken_simulation_loop')
+                if shipments_df is not None and not shipments_df.empty and days_sim is not None and days_sim > 0:
+                    daily_flow_per_origin = shipments_df.groupby('origin')['quantity_tons'].sum() / days_sim
+                    origins_display_df['debit_moyen_jour'] = origins_display_df.index.map(daily_flow_per_origin).fillna(0)
+                    origins_display_df['autonomie_restante_j'] = origins_display_df.apply(
+                        lambda row: row['stock_final_t'] / row['debit_moyen_jour'] if row['debit_moyen_jour'] > 0 else np.inf,
+                        axis=1
+                    )
+                    origins_display_df = origins_display_df.drop(columns=['debit_moyen_jour'])
+                else:
+                    origins_display_df['autonomie_restante_j'] = np.nan
+
+                cols_to_display = [
+                    'stock_initial_t', 'stock_final_t', 'stock_utilise_t', 'utilisation_stock_%',
+                    'autonomie_restante_j', 'daily_loading_capacity_tons'
+                ]
+                # On ne garde que les colonnes existantes et on ajoute les autres
+                final_cols_order = [c for c in cols_to_display if c in origins_display_df.columns]
+                other_cols = [c for c in origins_display_df.columns if c not in final_cols_order]
+                
+                st.dataframe(origins_display_df[final_cols_order + other_cols].style.format({
+                    'stock_initial_t': '{:,.0f}',
+                    'stock_final_t': '{:,.0f}',
+                    'stock_utilise_t': '{:,.0f}',
+                    'daily_loading_capacity_tons': '{:,.0f}',
+                    'utilisation_stock_%': '{:.1f}%',
+                    'autonomie_restante_j': '{:.1f}'
+                }, na_rep="N/A").set_properties(**{'text-align': 'right'}))
+
             else:
-                origins_display_df['autonomie_restante_j'] = np.nan
+                # --- GUIDE DE DÉBOGAGE ---
+                st.error("❌ ERREUR DE CONFIGURATION DES COLONNES", icon="⚙️")
+                st.write(
+                    "Le calcul du stock utilisé a échoué car une colonne n'a pas été trouvée. "
+                    "Cela signifie que le nom de la colonne du stock final dans le code ne correspond pas "
+                    "à celui retourné par votre simulation."
+                )
+                st.info(f"**Action à faire :**\n"
+                        f"1. Regardez la liste des 'Colonnes disponibles' ci-dessous.\n"
+                        f"2. Identifiez le vrai nom de la colonne qui contient le stock final.\n"
+                        f"3. Dans le code `app.py`, trouvez la ligne `col_stock_final = ...` (dans l'onglet 'Origines') "
+                        f"et remplacez la valeur par le nom correct que vous avez trouvé.", icon="💡")
 
-            cols_order = [
-                'stock_initial_t', 'stock_final_t', 'stock_utilise_t', 'utilisation_stock_%',
-                'autonomie_restante_j', 'daily_loading_capacity_tons'
-            ]
-            existing_cols_in_order = [col for col in cols_order if col in origins_display_df.columns]
-            other_cols = [col for col in origins_display_df.columns if col not in existing_cols_in_order]
-            final_cols_order = existing_cols_in_order + other_cols
-            
-            origins_display_df = origins_display_df[final_cols_order]
+                st.subheader("Données pour le débogage :")
+                st.write(f"**Nom de colonne de stock initial cherché :** `{col_stock_initial}` (Présent: {col_stock_initial in initial_orig_df.columns})")
+                st.write(f"**Nom de colonne de stock final cherché :** `{col_stock_final}` (Présent: {col_stock_final in origins_display_df.columns})")
+                
+                st.subheader("Colonnes disponibles dans le dataframe final (`final_orig_df`):")
+                st.code(final_orig_df.columns.tolist())
+                st.subheader("Aperçu des données finales :")
+                st.dataframe(final_orig_df)
 
-            st.dataframe(origins_display_df.style.format({
-                'stock_initial_t': '{:,.0f}',
-                'stock_final_t': '{:,.0f}',
-                'stock_utilise_t': '{:,.0f}',
-                'daily_loading_capacity_tons': '{:,.0f}',
-                'utilisation_stock_%': '{:.1f}%',
-                'autonomie_restante_j': '{:.1f}'
-            }, na_rep="N/A").set_properties(**{'text-align': 'right'}))
         else:
             st.info("Les données sur l'état final des origines ne sont pas disponibles.")
             
@@ -295,3 +333,13 @@ if st.session_state.results:
                 st.info("Aucune donnée de suivi des wagons n'a été enregistrée.")
         else:
             st.info("Le suivi des wagons n'était pas activé ou n'a retourné aucune donnée.")
+   
+
+
+    
+
+             
+   
+             
+         
+       
