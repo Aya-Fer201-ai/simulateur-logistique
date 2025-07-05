@@ -164,6 +164,7 @@ with st.sidebar:
 if not (relations_file and origins_file and destinations_file):
     st.info("👋 Bienvenue ! Veuillez téléverser vos 3 fichiers CSV dans la barre latérale pour commencer.")
 
+
 # ==============================================================================
 # --- AFFICHAGE DES RÉSULTATS ---
 # ==============================================================================
@@ -172,12 +173,65 @@ if st.session_state.results:
     res = st.session_state.results
     st.header("📊 Résultats de la Simulation")
 
-    # KPIs
+    # --- NOUVEAU : Bloc de calcul des KPIs ---
+    stock_used_tons = "N/A"
+    stock_utilization_rate = "N/A"
+    remaining_autonomy_days_display = "N/A"
+    
+    # Récupération des dataframes nécessaires
+    final_orig_df = res.get('final_origins_df')
+    initial_orig_df, _ = st.session_state.initial_data
+    shipments_df = res.get('shipments_df')
+    days_sim = res.get('days_taken_simulation_loop')
+
+    if final_orig_df is not None and initial_orig_df is not None:
+        # Calcul du stock
+        initial_stock_total = initial_orig_df['initial_available_product_tons'].sum()
+        final_stock_total = final_orig_df['initial_available_product_tons'].sum()
+        
+        # 1. Stock utilisé (en tonnes)
+        stock_used_tons = initial_stock_total - final_stock_total
+        
+        # 2. Taux d'utilisation du stock (%)
+        if initial_stock_total > 0:
+            utilization_rate = (stock_used_tons / initial_stock_total) * 100
+            stock_utilization_rate = f"{utilization_rate:.1f}%"
+        else:
+            stock_utilization_rate = "N/A"
+
+        # 3. Autonomie restante (en jours)
+        if (shipments_df is not None and not shipments_df.empty and 
+            days_sim is not None and days_sim > 0):
+            
+            avg_daily_shipment = shipments_df['quantity_tons'].sum() / days_sim
+            
+            if avg_daily_shipment > 0:
+                autonomy_days = final_stock_total / avg_daily_shipment
+                remaining_autonomy_days_display = f"{autonomy_days:.1f}"
+            else:
+                # Si rien n'a été expédié, l'autonomie est "infinie"
+                remaining_autonomy_days_display = "∞" 
+        else:
+            remaining_autonomy_days_display = "N/A" # Pas assez d'infos pour calculer
+
+    # --- FIN du bloc de calcul ---
+
+    # Affichage des KPIs en 2 rangées pour une meilleure lisibilité
+    st.subheader("Indicateurs Clés de Performance (KPIs)")
     col1, col2, col3 = st.columns(3)
     col1.metric("Profit Final (Tonnes * km)", f"{res.get('profit', 0):,.0f}".replace(',', ' '))
-    col2.metric("Jours de simulation", f"{res.get('days_taken_simulation_loop', 'N/A')}")
+    col2.metric("Jours de simulation", f"{days_sim if days_sim is not None else 'N/A'}")
     col3.metric("Demande satisfaite ?", "✅ Oui" if res.get('all_demand_met', False) else "❌ Non")
     
+    # --- NOUVEAU : Affichage des nouveaux KPIs ---
+    col4, col5, col6 = st.columns(3)
+    col4.metric("Stock utilisé (tonnes)", f"{stock_used_tons:,.0f}".replace(',', ' ') if isinstance(stock_used_tons, (int, float)) else "N/A")
+    col5.metric("Taux d'utilisation du stock", stock_utilization_rate)
+    col6.metric("Autonomie restante (jours)", remaining_autonomy_days_display)
+    
+    # Ligne de séparation visuelle
+    st.divider()
+
     # Bouton de téléchargement Excel
     if st.session_state.initial_data:
         initial_orig, initial_dest = st.session_state.initial_data
@@ -190,9 +244,8 @@ if st.session_state.results:
             use_container_width=True
         )
 
-    shipments_df = res.get('shipments_df')
+    # Le reste du code reste identique...
     final_dest_df = res.get('final_destinations_df')
-    final_orig_df = res.get('final_origins_df')
     tracking_vars = res.get('final_tracking_vars')
 
     # Onglets pour les résultats
@@ -256,5 +309,3 @@ if st.session_state.results:
                 st.info("Aucune donnée de suivi des wagons n'a été enregistrée.")
         else:
             st.info("Le suivi des wagons n'était pas activé ou n'a retourné aucune donnée.")
-                    
-       
